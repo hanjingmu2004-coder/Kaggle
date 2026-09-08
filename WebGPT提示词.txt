@@ -1,0 +1,62 @@
+┌────────────────────────────────────────────────────────────────────┐
+│ 用法：每题开新对话，上传 task_XXX_pack.zip，把下面整段贴进去，        │
+│ 只改第一行的任务编号（三位、补零，如 038 / 258）。其余不用动。        │
+└────────────────────────────────────────────────────────────────────┘
+
+TASK = task203
+
+——————————————————————————————————————————————————————————————————————
+
+# 任务：把上面这道 NeuroGolf 2026 任务的 ONNX 模型 cost 压到 ≤ 148
+
+我已上传 `TASK_pack.zip`，请先解压，读完 `SKILL_attack_one_task.md`（尤其 §0.1 死法速查表、
+§1.7 dtype 三层降位、§1.9-F 属性几何零成本算子、§4 武器库），再开始。
+
+## 先做两步（用上传包里的 tools 实测，别猜数字）
+1. 用 `tools/cost_oracle.py` 的 `cost_and_score(current/TASK.onnx, examples)` 读出 current 模型的
+   **cost / params / memory**（examples = `data/TASK.json` 里 train+test+arc-gen 全部样本，经 cost_oracle
+   的 `encode_grid` 编码）。这就是你要压的起点。
+2. 记住目标：**cost ≤ 148**（因为 `score = max(1, 25 − ln(cost))`，cost=148 时 score≈20，这是过 20 分线的门槛）。
+
+## 比赛与评分（决定一切）
+Kaggle NeuroGolf 2026：给一道 ARC-AGI 任务做最小 cost 的 ONNX 模型，复刻一个基准模型的输出。
+- `score = max(1, 25 − ln(cost))`，`cost = params + memory`，越低越好。
+- `params` = 所有 initializer / Constant 的元素总数。
+- `memory` = 所有 node 输出张量的累计字节数（按 dtype：f32=4 / f16=u16=2 / u8=bool=1 字节每元素）。
+- **免费**：名为 `input`/`output` 的张量不计；算子内部中间乘积（Einsum/MatMul/Conv 展开）不计；MACs 免费。
+
+## ★ 运行环境：onnxruntime 1.24.4（关键，不可假设成别的版本）★
+评分器用 **ORT 1.24.4** + `GraphOptimizationLevel.ORT_DISABLE_ALL`（关图优化，只跑内核），逐元素比对输出。
+算子可用性一律以 1.24.4 为准：
+- 可用 uint8 计算：Where(仅u8) / Min / Max / Div / Greater / Equal / ReduceMax / Add / Sub / Mul /
+  MaxPool / Clip / ArgMax（搬运类 Slice/Concat/Gather/Transpose/Reshape/Pad 任意 dtype）。
+- f16 全开，含 Conv / ConvTranspose / Einsum / MatMul（小整数精确，误差 0）。
+- 仍不可用（保持 f32）：Einsum/MatMul/ReduceSum/CumSum/TopK 的 int 版、Where 的 int8 版、
+  u16 的 Where/Min/Max/ReduceMax/Clip/Pad、i16 全部。
+- 结构禁用（评分直接 0）：算子名含 "Sequence"、sparse initializer、带子图(GRAPH)属性、
+  卷积输出通道 < 10、重复输出名、LOOP/SCAN/NONZERO/UNIQUE/COMPRESS。
+- ★崩溃陷阱：某些配置（如 pool strides=[0,0]）onnx.checker 能过，但 ORT 建 session 直接崩溃，
+  评分器会同样崩→0 分。任何新算子配置，构造后务必先建一次 ORT session 跑通，再用。★
+
+## 正确性标准（唯一硬标准，不许放宽）
+新模型输出必须**逐样本 bit-一致于 current 模型的原始输出张量（RAW，不是 argmax 解码后）**：
+- 对 `data/TASK.json` 的**每一个**样本（train+test+arc-gen），新模型 RAW vs current 模型 RAW，
+  `np.allclose(atol=1e-3)` 且 shape 相同，必须 **N/N 全过**。
+- 这是"复刻 baseline"——要同样的输出 + 更低的 cost，不是"对参考答案正确"。
+- ★可见样本全过是必要非充分★：历史上有模型可见全过但评分 0（过拟合 / 只在小窗等价）。所以任何"拟合"
+  或"几何变换"类改写，要论证语义在全分布成立，不能只看变换名或可见样本对。
+
+## 三重验证（每个候选都要过，缺一即弃）
+1. **cost**：`cost_oracle.cost_and_score` 新 cost < 起点，拆 params/memory。
+2. **复刻**：新模型 vs current 模型，全样本 RAW `allclose(atol=1e-3)` N/N（报具体数字，如 266/266）。
+3. **合法**：`tools/neurogolf_utils.py` 的 `score_network` 返回非 None（非 VOID）。
+4.（几何/拟合类额外）论证语义在全分布成立。
+
+（`tools/gate.py` 里 ROOT 路径是别人机器的，不用跑它的 self-check，import 函数即可；
+ 若报路径错，直接用 cost_oracle + numpy 比对两模型输出。）
+
+## 交付
+- 最终 `TASK.onnx`（可下载）。
+- 报告：起点 cost → 新 cost（拆 params/memory）、用了哪个杠杆、三重验证结果（全样本 N/N 具体数字）、
+  是否 ≤ 148。
+- 没达标就如实说卡在哪，别为凑数放宽正确性。

@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NeuroGolf · ARC 任务可视化</title>
+<!--
+  ════════════════════════════════════════════════════════════════════════
+  NeuroGolf 2026 · ARC 任务可视化工具  (单文件 / 纯前端 / 离线可用)
+  ────────────────────────────────────────────────────────────────────────
+  目的:在浏览器里一眼看懂每道 ARC 任务的「本质动作」(input → output 怎么变)。
+  数据:Golf2026/data/taskNNN.json  +  Golf2026/task_overview_v32.tsv
+  放置:本文件放在 Golf2026/tools/ 下,默认相对路径读 ../data 和 ../task_overview_v32.tsv
+
+  两种加载方式(自动判断):
+    · http(s) 模式(推荐,用 start.py / start.bat 起本地服务):自动 fetch 相对路径。
+    · file:// 模式(直接双击本文件):用「选择 data 文件夹」+「选择主表 TSV」手动加载,
+      文件夹选一次,400 题全部进内存,翻题无需服务。
+
+  核心功能:任务选择/翻题 · train·test 样例并排(input→output) · ARC 标准配色彩色网格
+            · diff 高亮(聚光/描边,一眼看出变化=动作) · arc-gen 翻页浏览
+            · 主表叠加(cost/score/source/LB) · 可排序筛选的任务列表(辅助选题)
+  快捷键:← / → 翻题 ; D 切换 diff ; G 切换网格线 ; [ ] 缩放
+  ════════════════════════════════════════════════════════════════════════
+-->
+<style>
+:root{
+  --bg:#0d0d10; --panel:#16161b; --panel-2:#1c1c23; --panel-3:#23232c;
+  --line:#2a2a33; --line-soft:#22222a;
+  --text:#e9e9ef; --muted:#9596a4; --muted-2:#6f7080;
+  --accent:#ffd60a;        /* NeuroGolf 金 */
+  --accent-dim:#8a7400;
+  --sky:#38bdf8; --violet:#a78bfa; --zinc:#71717a;  /* source 徽章 */
+  --grid-line:#34343f;     /* 网格分隔线 */
+  --grid-bg:#0a0a0d;       /* 网格画布底色 */
+  --radius:9px;
+  --font-mono:'Cascadia Code','JetBrains Mono','Consolas','SFMono-Regular',ui-monospace,monospace;
+  --font-ui:'Segoe UI Variable','Segoe UI','PingFang SC','Microsoft YaHei',system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--font-ui); font-size:13px; line-height:1.45;
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+button,input,select{font-family:inherit; font-size:13px; color:var(--text)}
+button{
+  background:var(--panel-3); border:1px solid var(--line); color:var(--text);
+  padding:5px 11px; border-radius:7px; cursor:pointer; transition:.12s; user-select:none;
+}
+button:hover{background:#2e2e38; border-color:#3c3c47}
+button:active{transform:translateY(1px)}
+button.primary{background:var(--accent); color:#1a1500; border-color:var(--accent); font-weight:600}
+button.primary:hover{background:#ffe34a}
+button.ghost{background:transparent}
+input[type=text],input[type=number],select{
+  background:var(--panel); border:1px solid var(--line); border-radius:7px; padding:5px 9px;
+}
+input:focus,select:focus{outline:none; border-color:var(--accent-dim)}
+::-webkit-scrollbar{width:11px; height:11px}
+::-webkit-scrollbar-thumb{background:#2c2c36; border-radius:6px; border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:#3a3a46}
+.mono{font-family:var(--font-mono)}
+
+/* ───── 布局骨架 ───── */
+#app{display:flex; flex-direction:column; height:100vh}
+header{
+  flex:0 0 auto; border-bottom:1px solid var(--line); background:var(--panel);
+  padding:9px 14px; display:flex; flex-direction:column; gap:8px;
+}
+.hrow{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+.brand{display:flex; align-items:baseline; gap:9px; margin-right:6px}
+.brand .logo{font-weight:800; letter-spacing:.5px; font-size:15px}
+.brand .logo b{color:var(--accent)}
+.brand .sub{color:var(--muted-2); font-size:11px; font-family:var(--font-mono)}
+.spacer{flex:1 1 auto}
+
+.nav{display:flex; align-items:center; gap:6px}
+.nav .tasklabel{font-family:var(--font-mono); font-size:14px; min-width:78px; text-align:center}
+.nav .tasklabel b{color:var(--accent)}
+#taskInput{width:62px; text-align:center; font-family:var(--font-mono)}
+
+/* 主表信息条 */
+.meta{display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-family:var(--font-mono); font-size:12px}
+.meta .chip{background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:3px 9px; display:flex; gap:6px; align-items:center}
+.meta .chip .k{color:var(--muted-2); font-size:10.5px; text-transform:uppercase; letter-spacing:.4px}
+.meta .chip .v{color:var(--text); font-weight:600}
+.badge{padding:2px 9px; border-radius:6px; font-weight:700; font-size:11px; letter-spacing:.5px; font-family:var(--font-mono)}
+.badge.DEEP{background:rgba(56,189,248,.16); color:var(--sky); border:1px solid rgba(56,189,248,.4)}
+.badge.PUBLIC{background:rgba(167,139,250,.16); color:var(--violet); border:1px solid rgba(167,139,250,.4)}
+.badge.BASE{background:rgba(113,113,122,.18); color:#a7a7b3; border:1px solid rgba(113,113,122,.45)}
+.badge.NA{background:var(--panel-3); color:var(--muted-2); border:1px solid var(--line)}
+
+/* 控件条 */
+.controls{display:flex; align-items:center; gap:14px; flex-wrap:wrap; color:var(--muted)}
+.ctl{display:flex; align-items:center; gap:7px}
+.ctl label{color:var(--muted); font-size:12px; white-space:nowrap}
+.seg{display:inline-flex; border:1px solid var(--line); border-radius:7px; overflow:hidden}
+.seg button{border:none; border-radius:0; padding:4px 10px; background:var(--panel)}
+.seg button.on{background:var(--accent); color:#1a1500; font-weight:600}
+.seg button+button{border-left:1px solid var(--line)}
+input[type=range]{accent-color:var(--accent); width:120px}
+.switch{display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none}
+.switch input{display:none}
+.switch .track{width:34px; height:18px; background:var(--panel-3); border:1px solid var(--line); border-radius:10px; position:relative; transition:.15s}
+.switch .track::after{content:''; position:absolute; top:1px; left:1px; width:14px; height:14px; border-radius:50%; background:var(--muted); transition:.15s}
+.switch input:checked + .track{background:var(--accent-dim); border-color:var(--accent)}
+.switch input:checked + .track::after{left:17px; background:var(--accent)}
+
+/* ───── 主体:侧栏 + 内容 ───── */
+.main{flex:1 1 auto; display:flex; min-height:0}
+aside{
+  flex:0 0 var(--side-w,300px); border-right:1px solid var(--line); background:var(--panel);
+  display:flex; flex-direction:column; min-height:0; transition:flex-basis .15s;
+}
+aside.collapsed{flex-basis:0; overflow:hidden; border-right:none}
+.side-head{padding:9px 11px; border-bottom:1px solid var(--line); display:flex; flex-direction:column; gap:8px}
+.side-head .title{display:flex; align-items:center; justify-content:space-between; font-weight:600; font-size:12px; color:var(--muted)}
+.side-head .title .cnt{font-family:var(--font-mono); color:var(--muted-2)}
+.filters{display:flex; gap:6px; flex-wrap:wrap}
+.filters .src-chip{padding:3px 8px; border-radius:6px; font-size:11px; font-family:var(--font-mono); cursor:pointer; border:1px solid var(--line); background:var(--panel-2); opacity:.45; user-select:none}
+.filters .src-chip.on{opacity:1}
+.filters .src-chip.DEEP.on{border-color:rgba(56,189,248,.6); color:var(--sky)}
+.filters .src-chip.PUBLIC.on{border-color:rgba(167,139,250,.6); color:var(--violet)}
+.filters .src-chip.BASE.on{border-color:rgba(113,113,122,.7); color:#a7a7b3}
+.list-head{display:grid; grid-template-columns:64px 1fr 1fr 54px; gap:4px; padding:6px 11px; border-bottom:1px solid var(--line);
+  font-size:10.5px; color:var(--muted-2); text-transform:uppercase; letter-spacing:.4px; font-family:var(--font-mono)}
+.list-head span{cursor:pointer; user-select:none; white-space:nowrap}
+.list-head span:hover{color:var(--text)}
+.list-head span.sorted{color:var(--accent)}
+.tasklist{flex:1 1 auto; overflow-y:auto; min-height:0}
+.trow{display:grid; grid-template-columns:64px 1fr 1fr 54px; gap:4px; padding:5px 11px; cursor:pointer;
+  font-family:var(--font-mono); font-size:11.5px; border-bottom:1px solid var(--line-soft); align-items:center}
+.trow:hover{background:var(--panel-2)}
+.trow.cur{background:rgba(255,214,10,.10); box-shadow:inset 3px 0 0 var(--accent)}
+.trow .t{color:var(--text)}
+.trow .c{color:var(--muted)}
+.trow .s{color:var(--text)}
+.trow .src{font-size:10px; padding:1px 6px; border-radius:5px; text-align:center; justify-self:start}
+
+.content{flex:1 1 auto; overflow-y:auto; min-height:0; padding:16px 18px 60px}
+.section{margin-bottom:26px}
+.sec-head{display:flex; align-items:center; gap:10px; margin-bottom:12px; position:sticky; top:0; z-index:5;
+  background:linear-gradient(var(--bg) 70%, rgba(13,13,16,0)); padding:4px 0}
+.sec-head .lbl{font-size:12px; font-weight:700; letter-spacing:1.5px; padding:3px 11px; border-radius:6px; font-family:var(--font-mono)}
+.sec-head .lbl.train{background:rgba(255,214,10,.14); color:var(--accent); border:1px solid rgba(255,214,10,.35)}
+.sec-head .lbl.test{background:rgba(56,189,248,.14); color:var(--sky); border:1px solid rgba(56,189,248,.4)}
+.sec-head .lbl.gen{background:rgba(167,139,250,.13); color:var(--violet); border:1px solid rgba(167,139,250,.35)}
+.sec-head .meta-mini{color:var(--muted-2); font-family:var(--font-mono); font-size:11px}
+.sec-head .pager{display:flex; align-items:center; gap:6px; margin-left:auto; font-family:var(--font-mono); font-size:12px}
+.sec-head .pager button{padding:3px 9px}
+.sec-head .pager .pg{color:var(--muted); min-width:120px; text-align:center}
+.sec-head .pager input{width:58px; text-align:center}
+
+/* 样例对 input → output */
+.pairs{display:flex; flex-direction:column; gap:14px}
+.pairs.wrap{flex-direction:row; flex-wrap:wrap; gap:14px}
+.pair{display:flex; align-items:flex-start; gap:12px; background:var(--panel); border:1px solid var(--line);
+  border-radius:var(--radius); padding:12px 14px;}
+.pair.test{border-color:rgba(56,189,248,.35); background:linear-gradient(180deg,rgba(56,189,248,.05),var(--panel))}
+.pair.gen{padding:9px 10px; gap:8px}
+.pair .idx{position:absolute; }
+.cell-block{display:flex; flex-direction:column; align-items:center; gap:5px}
+.grid-wrap{background:var(--grid-bg); border:1px solid var(--line); border-radius:5px; padding:3px; line-height:0}
+.grid-wrap.out{border-color:#3a3a44}
+.grid-wrap canvas{display:block; image-rendering:pixelated; cursor:crosshair}
+.sz{font-family:var(--font-mono); font-size:10.5px; color:var(--muted); white-space:nowrap}
+.sz .big{color:var(--accent)} /* >30 标记 */
+.arrow{display:flex; flex-direction:column; align-items:center; justify-content:center; align-self:center; min-width:74px; gap:4px}
+.arrow .ar{font-size:22px; color:var(--accent); line-height:1}
+.arrow .summary{font-family:var(--font-mono); font-size:10.5px; color:var(--muted); text-align:center; max-width:96px}
+.arrow .summary .hi{color:var(--accent)}
+.pair .tag{font-family:var(--font-mono); font-size:10px; color:var(--muted-2); align-self:flex-start; padding-top:2px; min-width:30px}
+
+/* 空状态 / 加载 */
+.empty{color:var(--muted-2); font-family:var(--font-mono); font-size:12px; padding:8px 2px}
+#loader{position:fixed; inset:0; background:rgba(13,13,16,.86); backdrop-filter:blur(2px); display:none; align-items:center; justify-content:center; z-index:50}
+#loader .box{text-align:center; color:var(--muted)}
+#loader .ring{width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--accent); border-radius:50%; margin:0 auto 12px; animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* 加载面板(file 模式 / 出错) */
+#setup{position:fixed; inset:0; background:rgba(13,13,16,.92); display:none; align-items:center; justify-content:center; z-index:60}
+#setup .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:26px 30px; max-width:560px; width:90%}
+#setup h2{margin:0 0 4px; font-size:17px}
+#setup p{color:var(--muted); margin:6px 0; font-size:12.5px}
+#setup .opt{border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-top:14px; background:var(--panel-2)}
+#setup .opt h3{margin:0 0 6px; font-size:13px; color:var(--accent)}
+#setup .opt .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px}
+#setup code{background:var(--panel-3); padding:2px 6px; border-radius:5px; font-family:var(--font-mono); font-size:11.5px; color:var(--sky)}
+#setupStatus{margin-top:12px; font-family:var(--font-mono); font-size:11.5px; color:var(--muted-2); min-height:16px}
+
+/* tooltip */
+#tip{position:fixed; pointer-events:none; z-index:80; background:#000; border:1px solid var(--line);
+  border-radius:6px; padding:4px 8px; font-family:var(--font-mono); font-size:11px; color:var(--text);
+  display:none; white-space:nowrap; box-shadow:0 4px 14px rgba(0,0,0,.5)}
+#tip .sw{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:5px; vertical-align:-1px; border:1px solid rgba(255,255,255,.25)}
+
+/* diff 图例 */
+.legend{display:flex; gap:14px; align-items:center; flex-wrap:wrap; font-size:11px; color:var(--muted-2); font-family:var(--font-mono)}
+.legend .it{display:flex; align-items:center; gap:5px}
+.legend .demo{width:16px; height:16px; border-radius:3px; background:var(--panel-3); position:relative}
+.legend .demo.changed{box-shadow:inset 0 0 0 2px #fff, inset 0 0 0 3px #000}
+.legend .demo.added{box-shadow:inset 0 0 0 2px #fff, inset 0 0 0 3px #000; border:1px dashed #fff}
+.legend .demo.dim{opacity:.38}
+.toast{position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#000; border:1px solid var(--line);
+  padding:8px 16px; border-radius:8px; font-family:var(--font-mono); font-size:12px; z-index:90; display:none}
+small.kbd{font-family:var(--font-mono); background:var(--panel-3); border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:0 5px; color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ════ 顶栏 ════ -->
+  <header>
+    <div class="hrow">
+      <div class="brand">
+        <span class="logo"><b>Neuro</b>Golf · ARC</span>
+        <span class="sub" id="modeTag">—</span>
+      </div>
+      <button class="ghost" id="sideToggle" title="折叠/展开任务列表 (T)">☰ 列表</button>
+      <div class="nav">
+        <button id="prevBtn" title="上一题 (←)">◀</button>
+        <span class="tasklabel">task<b id="taskNumLbl">—</b></span>
+        <button id="nextBtn" title="下一题 (→)">▶</button>
+        <input type="text" id="taskInput" placeholder="NNN" title="输入 1-400 回车跳转">
+        <button id="goBtn">跳转</button>
+      </div>
+      <div class="spacer"></div>
+      <div class="meta" id="metaStrip">
+        <span class="empty">主表未加载</span>
+      </div>
+    </div>
+
+    <div class="hrow controls">
+      <div class="ctl">
+        <label>Diff</label>
+        <div class="seg" id="diffSeg">
+          <button data-v="spotlight">聚光</button>
+          <button data-v="ring">描边</button>
+          <button data-v="off">关</button>
+        </div>
+      </div>
+      <div class="ctl">
+        <label class="switch" title="网格分隔线 (G)">
+          <input type="checkbox" id="gridLinesChk" checked><span class="track"></span>
+          <span>网格线</span>
+        </label>
+      </div>
+      <div class="ctl">
+        <label>缩放</label>
+        <input type="range" id="zoom" min="0.5" max="2.4" step="0.1" value="1">
+        <span class="mono" id="zoomVal" style="color:var(--muted);width:34px">1.0×</span>
+      </div>
+      <div class="ctl">
+        <label>arc-gen 每页</label>
+        <input type="number" id="agSize" min="2" max="60" step="2" value="12" style="width:58px">
+      </div>
+      <div class="legend">
+        <span class="it"><span class="demo changed"></span>变化格</span>
+        <span class="it"><span class="demo added"></span>新增/消失</span>
+        <span class="it"><span class="demo dim"></span>未变(聚光时变暗)</span>
+      </div>
+      <div class="spacer"></div>
+      <button class="ghost" id="reloadBtn" title="重新加载当前任务/主表">↻ 重载</button>
+      <button class="ghost" id="loadFilesBtn" title="手动选择数据(file:// 模式)">📁 选数据</button>
+    </div>
+  </header>
+
+  <!-- ════ 主体 ════ -->
+  <div class="main">
+    <aside id="side">
+      <div class="side-head">
+        <div class="title"><span>任务列表</span><span class="cnt" id="listCnt">—</span></div>
+        <input type="text" id="searchInput" placeholder="搜索 task 编号…">
+        <div class="filters" id="srcFilters">
+          <span class="src-chip DEEP on" data-src="DEEP">DEEP</span>
+          <span class="src-chip PUBLIC on" data-src="PUBLIC">PUBLIC</span>
+          <span class="src-chip BASE on" data-src="BASE">BASE</span>
+        </div>
+      </div>
+      <div class="list-head" id="listHead">
+        <span data-sort="num">task</span>
+        <span data-sort="cost">cost</span>
+        <span data-sort="score">score</span>
+        <span data-sort="source">src</span>
+      </div>
+      <div class="tasklist" id="taskList"></div>
+    </aside>
+
+    <div class="content" id="content">
+      <div class="empty">加载中…</div>
+    </div>
+  </div>
+</div>
+
+<!-- 浮层 -->
+<div id="tip"></div>
+<div id="loader"><div class="box"><div class="ring"></div><div id="loaderMsg">加载中…</div></div></div>
+<div class="toast" id="toast"></div>
+
+<!-- 数据加载面板 -->
+<div id="setup">
+  <div class="card">
+    <h2>加载 ARC 数据</h2>
+    <p id="setupReason">检测到无法自动读取本地数据(可能是用 file:// 直接打开)。请选择下面任一方式。</p>
+
+    <div class="opt">
+      <h3>方式 A · 手动选择(直接双击打开时用)</h3>
+      <p>选择 <code>Golf2026/data</code> 整个文件夹(400 个 json 一次性进内存),可选再选主表 TSV。之后翻题无需服务。</p>
+      <div class="row">
+        <input type="file" id="dirPicker" webkitdirectory directory multiple style="max-width:330px">
+        <span class="mono" id="dirStat" style="color:var(--muted-2)"></span>
+      </div>
+      <div class="row">
+        <input type="file" id="tsvPicker" accept=".tsv,.txt,.csv" style="max-width:330px">
+        <span class="mono" id="tsvStat" style="color:var(--muted-2)"></span>
+      </div>
+    </div>
+
+    <div class="opt">
+      <h3>方式 B · 本地服务(推荐,长期最省事)</h3>
+      <p>在 <code>Golf2026/tools/</code> 双击 <code>start.bat</code>(或运行 <code>python start.py</code>),
+         浏览器会自动打开 <code>http://localhost:8011/tools/arc_viewer.html</code>,数据自动读取。</p>
+    </div>
+
+    <div id="setupStatus"></div>
+    <div class="row" style="margin-top:16px; display:flex; gap:10px">
+      <button class="primary" id="setupGo">用已选数据进入</button>
+      <button class="ghost" id="setupClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ══════════════════════════════════════════════════════════════════════
+   1) 常量:ARC 标准配色(务必固定,人有肌肉记忆)
+   ══════════════════════════════════════════════════════════════════════ */
+const ARC = ['#000000','#0074D9','#FF4136','#2ECC40','#FFDC00',
+             '#AAAAAA','#F012BE','#FF851B','#7FDBCA','#870C25'];
+const ARC_NAME = ['黑','蓝','红','绿','黄','灰','品红','橙','青','褐'];
+
+/* 渲染基准盒(每个网格最长边的目标像素,乘以全局 zoom) */
+const BOX = { train:300, test:300, gen:128 };
+const CELL_MIN = 3, CELL_MAX = 46;          // 单格像素夹紧
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+/* ══════════════════════════════════════════════════════════════════════
+   2) 全局状态 + 设置持久化(localStorage,file:// 下做了 try/catch 降级)
+   ══════════════════════════════════════════════════════════════════════ */
+const LS = {
+  get(k,d){ try{ const v=localStorage.getItem('ng_'+k); return v==null?d:JSON.parse(v);}catch(e){return d;} },
+  set(k,v){ try{ localStorage.setItem('ng_'+k, JSON.stringify(v)); }catch(e){} }
+};
+const state = {
+  taskNum: LS.get('lastTask',15),
+  task: null,                 // 当前任务 json
+  dataDir: LS.get('dataDir','../data'),
+  tsvPath: '../task_overview.tsv',
+  http: location.protocol.startsWith('http'),
+  fileMode: false,
+  jsonFiles: new Map(),       // file 模式:name -> File
+  tsv: null,                  // {rows, byNum, cols}
+  settings: {
+    diff: LS.get('diff','spotlight'),
+    gridLines: LS.get('gridLines',true),
+    zoom: LS.get('zoom',1),
+    agSize: LS.get('agSize',12),
+  },
+  agPage: 0,
+  sort: LS.get('sort',{key:'num',dir:1}),
+  srcFilter: LS.get('srcFilter',{DEEP:true,PUBLIC:true,BASE:true}),
+  search: '',
+};
+
+/* DOM 引用 */
+const $ = s => document.querySelector(s);
+const content   = $('#content');
+const taskNumLbl= $('#taskNumLbl');
+const metaStrip = $('#metaStrip');
+const tip       = $('#tip');
+const toastEl   = $('#toast');
+
+/* ══════════════════════════════════════════════════════════════════════
+   3) 工具函数
+   ══════════════════════════════════════════════════════════════════════ */
+const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
+const pad3  = n => String(n).padStart(3,'0');
+function toast(msg,ms=1600){ toastEl.textContent=msg; toastEl.style.display='block';
+  clearTimeout(toast._t); toast._t=setTimeout(()=>toastEl.style.display='none',ms); }
+function showLoader(msg){ $('#loaderMsg').textContent=msg||'加载中…'; $('#loader').style.display='flex'; }
+function hideLoader(){ $('#loader').style.display='none'; }
+
+/* 从任意 task 字段提取整数编号(兼容 "task015" / "15" / "015" / "task15.json") */
+function taskNumOf(raw){ const m=String(raw).match(/(\d+)/); return m?parseInt(m[1],10):null; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   4) 数据加载(http fetch / file 内存)
+   ══════════════════════════════════════════════════════════════════════ */
+async function fetchTaskJSON(n){
+  // 依次尝试几种常见相对布局,提升鲁棒性
+  const cands = [
+    `${state.dataDir}/task${pad3(n)}.json`,
+    `data/task${pad3(n)}.json`,
+    `task${pad3(n)}.json`,
+  ];
+  let lastErr;
+  for(const url of cands){
+    try{ const r=await fetch(url,{cache:'no-store'}); if(r.ok) return await r.json(); lastErr=`${r.status} @ ${url}`; }
+    catch(e){ lastErr=e.message+' @ '+url; }
+  }
+  throw new Error(lastErr||'fetch 失败');
+}
+function readFileText(file){ return new Promise((res,rej)=>{ const fr=new FileReader();
+  fr.onload=()=>res(fr.result); fr.onerror=()=>rej(fr.error); fr.readAsText(file); }); }
+
+async function loadTaskData(n){
+  if(state.fileMode){
+    const f = state.jsonFiles.get(`task${pad3(n)}.json`);
+    if(!f) throw new Error(`内存中找不到 task${pad3(n)}.json(请确认已选含该文件的 data 文件夹)`);
+    return JSON.parse(await readFileText(f));
+  }
+  return await fetchTaskJSON(n);
+}
+
+async function tryLoadTSV(){
+  if(state.fileMode) return; // file 模式由 picker 设定
+  const cands = [state.tsvPath, 'task_overview.tsv', '../task_overview.tsv', 'task_overview.tsv'];
+  for(const url of cands){
+    try{ const r=await fetch(url,{cache:'no-store'}); if(r.ok){ state.tsv=parseTSV(await r.text()); return; } }
+    catch(e){}
+  }
+  state.tsv=null; // 没找到也不致命
+}
+
+/* ── 主表 TSV 解析:按列名鲁棒定位(兼容列数/顺序变化,source 取末列兜底)── */
+function parseTSV(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length);
+  if(!lines.length) return null;
+  const sep = lines[0].includes('\t') ? '\t' : (lines[0].includes(',')? ',' : '\t');
+  const header = lines[0].split(sep).map(h=>h.trim());
+  const low = header.map(h=>h.toLowerCase());
+  const find = (...names)=>{ for(const nm of names){ const i=low.indexOf(nm); if(i>=0) return i; } return -1; };
+  const ci = {
+    task:  find('task','task_id','id') >=0 ? find('task','task_id','id') : 0,
+    cost:  find('current_cost','cost'),
+    score: find('current_score','score'),
+    lb:    find('lb_status','lb','status'),
+    src:   find('source','src') >=0 ? find('source','src') : header.length-1,
+  };
+  const rows=[], byNum={};
+  for(let i=1;i<lines.length;i++){
+    const c = lines[i].split(sep);
+    const num = taskNumOf(c[ci.task]);
+    if(num==null) continue;
+    const o = {
+      num,
+      task: (c[ci.task]||'').trim(),
+      cost:  ci.cost>=0 ? c[ci.cost]?.trim()  : '',
+      score: ci.score>=0? c[ci.score]?.trim() : '',
+      lb:    ci.lb>=0   ? c[ci.lb]?.trim()    : '',
+      source:(ci.src>=0 ? c[ci.src]?.trim()   : '').toUpperCase(),
+    };
+    rows.push(o); byNum[num]=o;
+  }
+  return { rows, byNum, header, ci };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   5) diff 计算:返回 input/output 两张状态图
+      状态 ∈ same | changed | added(仅 output 多出) | removed(仅 input 多出)
+      尺寸不同 → 左上角对齐比较(这正是题面建议的方式)
+   ══════════════════════════════════════════════════════════════════════ */
+function computeDiff(inG, outG){
+  const iH=inG.length, iW=inG[0].length, oH=outG.length, oW=outG[0].length;
+  const outMask = Array.from({length:oH}, (_,r)=>Array.from({length:oW}, (_,c)=>{
+    if(r<iH && c<iW) return inG[r][c]===outG[r][c] ? 'same' : 'changed';
+    return 'added';
+  }));
+  const inMask = Array.from({length:iH}, (_,r)=>Array.from({length:iW}, (_,c)=>{
+    if(r<oH && c<oW) return inG[r][c]===outG[r][c] ? 'same' : 'changed';
+    return 'removed';
+  }));
+  // 统计 + 关系描述
+  let changed=0, total=Math.min(iH,oH)*Math.min(iW,oW);
+  for(let r=0;r<Math.min(iH,oH);r++) for(let c=0;c<Math.min(iW,oW);c++)
+    if(inG[r][c]!==outG[r][c]) changed++;
+  return { inMask, outMask, iH,iW,oH,oW, changed, total };
+}
+
+/* input→output 的「本质动作」一句话摘要 */
+function actionSummary(d){
+  const {iH,iW,oH,oW,changed,total}=d;
+  if(iH===oH && iW===oW){
+    if(changed===0) return {txt:'完全相同(无变化)', big:false};
+    return {txt:`改变 <span class="hi">${changed}</span>/${total} 格`, big:false};
+  }
+  let txt = `${iH}×${iW} → ${oH}×${oW}`, tail='';
+  const sx=oW/iW, sy=oH/iH;
+  if(Number.isInteger(sx)&&Number.isInteger(sy)&&sx===sy&&sx>1) tail=`放大 ×${sx}`;
+  else if(iW%oW===0&&iH%oH===0&&(iW/oW)===(iH/oH)&&iW/oW>1) tail=`缩小 ×${iW/oW}`;
+  else if(oH>=iH&&oW>=iW) tail='变大';
+  else if(oH<=iH&&oW<=iW) tail='变小';
+  if(tail) txt+=` <span class="hi">·${tail}</span>`;
+  return {txt, big:Math.max(iH,iW,oH,oW)>30};
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   6) 网格渲染(canvas,设备像素对齐 → 像素级清晰)
+   ══════════════════════════════════════════════════════════════════════ */
+function makeGridCanvas(grid, mask, box, role){      // role: 'in'(变换前·参照) | 'out'(变换后·看动作)
+  const rows=grid.length, cols=grid[0].length;
+  const zoom=state.settings.zoom;
+  const cellCss = clamp(Math.floor(box/Math.max(rows,cols)), CELL_MIN, CELL_MAX) * zoom;
+  const cellDev = Math.max(1, Math.round(cellCss*DPR));
+  const cssCell = cellDev/DPR;                         // 真实 css 单格(供 hover 反算)
+  const cv = document.createElement('canvas');
+  cv.width = cols*cellDev; cv.height = rows*cellDev;
+  cv.style.width = (cols*cssCell)+'px'; cv.style.height=(rows*cssCell)+'px';
+  const ctx = cv.getContext('2d');
+  const lines = state.settings.gridLines && cellDev>=6;
+  const lw = lines ? Math.max(1, Math.round(DPR)) : 0;
+  const diffOn = state.settings.diff!=='off' && mask;
+  const spotlight = state.settings.diff==='spotlight';
+  const ring = state.settings.diff==='ring';
+  const isOut = role==='out';
+
+  /* 方向感知:输入图是「变换前」的参照,保持本色,只把「会被裁掉(removed)」的格子标出;
+     输出图才是「看动作」的地方:聚光下压暗未变(same)、强调改变(changed)与新增(added)。
+     hasEmph:本图是否真有可强调的格子 —— 避免「整张压暗」(如纯裁剪时 output 全是 same)。 */
+  let hasEmph=false;
+  if(diffOn){
+    for(let r=0;r<rows && !hasEmph;r++) for(let c=0;c<cols;c++){
+      const st=mask[r] && mask[r][c];
+      if(isOut){ if(st==='changed'||st==='added'){ hasEmph=true; break; } }
+      else     { if(st==='removed'){ hasEmph=true; break; } }
+    }
+  }
+
+  // 底色(网格线颜色)
+  ctx.fillStyle = lines ? getCss('--grid-line') : getCss('--grid-bg');
+  ctx.fillRect(0,0,cv.width,cv.height);
+
+  // 画每个格子
+  for(let r=0;r<rows;r++){
+    for(let c=0;c<cols;c++){
+      const v=grid[r][c];
+      const x=c*cellDev, y=r*cellDev;
+      ctx.fillStyle = ARC[v] ?? '#ff00ff';
+      ctx.fillRect(x+lw, y+lw, cellDev-lw, cellDev-lw);
+
+      if(diffOn){
+        const st = mask[r] && mask[r][c];
+        if(isOut){
+          // 输出图:聚光时压暗未变格(仅当本图确有 changed/added 可强调时);改变/新增描边
+          if(spotlight && st==='same' && hasEmph){
+            ctx.fillStyle='rgba(8,8,11,0.64)';
+            ctx.fillRect(x+lw, y+lw, cellDev-lw, cellDev-lw);
+          }
+          if((st==='changed'||st==='added') && cellDev>=5){
+            drawRing(ctx, x, y, cellDev, st!=='changed'); // changed=实线,added=虚线
+          }
+        }else{
+          // 输入图:保持本色作参照;只处理 removed(将被裁掉/消失的格子)
+          if(st==='removed'){
+            if(spotlight){
+              ctx.fillStyle='rgba(8,8,11,0.64)';
+              ctx.fillRect(x+lw, y+lw, cellDev-lw, cellDev-lw);
+            }
+            if(cellDev>=5) drawRing(ctx, x, y, cellDev, true); // 虚线=消失/被裁
+          }
+        }
+      }
+    }
+  }
+  cv._arc = { grid, cell:cssCell, rows, cols };          // 供 tooltip
+  attachHover(cv);
+  return cv;
+}
+
+/* 变化格描边:深色光晕 + 白色内环,保证在任意颜色(含黄/黑)上都清晰 */
+function drawRing(ctx,x,y,size,dashed){
+  const outerW=Math.max(2,Math.round(size*0.20));
+  const innerW=Math.max(1,Math.round(size*0.10));
+  const dash = dashed ? [Math.max(2,Math.round(size*0.28)), Math.max(2,Math.round(size*0.20))] : [];
+  const inset=Math.round(outerW/2)+0.5;
+  const rx=x+inset, ry=y+inset, rs=size-2*inset;
+  ctx.save();
+  ctx.setLineDash(dash);
+  ctx.lineWidth=outerW; ctx.strokeStyle='rgba(0,0,0,0.9)'; ctx.strokeRect(rx,ry,rs,rs);
+  ctx.lineWidth=innerW; ctx.strokeStyle='#ffffff';        ctx.strokeRect(rx,ry,rs,rs);
+  ctx.restore();
+}
+function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+/* hover → tooltip 显示 (r,c)=值 颜色名 */
+function attachHover(cv){
+  cv.addEventListener('mousemove', e=>{
+    const {grid,cell,rows,cols}=cv._arc;
+    const rect=cv.getBoundingClientRect();
+    const c=clamp(Math.floor((e.clientX-rect.left)/cell),0,cols-1);
+    const r=clamp(Math.floor((e.clientY-rect.top)/cell),0,rows-1);
+    const v=grid[r][c];
+    tip.innerHTML=`<span class="sw" style="background:${ARC[v]}"></span>(${r},${c}) = ${v} ${ARC_NAME[v]??''}`;
+    tip.style.display='block';
+    tip.style.left=(e.clientX+12)+'px'; tip.style.top=(e.clientY+12)+'px';
+  });
+  cv.addEventListener('mouseleave', ()=>{ tip.style.display='none'; });
+}
+
+/* ── 组装一个「input → output」样例对 ── */
+function buildPair(sample, kind, label){
+  const inG=sample.input, outG=sample.output;
+  const d=computeDiff(inG,outG);
+  const box = BOX[kind];
+  const pair=document.createElement('div');
+  pair.className='pair'+(kind==='test'?' test':'')+(kind==='gen'?' gen':'');
+
+  if(label){ const tag=document.createElement('div'); tag.className='tag'; tag.textContent=label; pair.appendChild(tag); }
+
+  const mkBlock=(grid,mask,which)=>{
+    const blk=document.createElement('div'); blk.className='cell-block';
+    const wrap=document.createElement('div'); wrap.className='grid-wrap'+(which==='out'?' out':'');
+    wrap.appendChild(makeGridCanvas(grid, mask, box, which));
+    const sz=document.createElement('div'); sz.className='sz';
+    const big = Math.max(grid.length,grid[0].length)>30;
+    sz.innerHTML=`${which==='in'?'in':'out'} ${grid.length}×${grid[0].length}`+(big?' <span class="big">·&gt;30</span>':'');
+    blk.appendChild(wrap); blk.appendChild(sz); return blk;
+  };
+
+  pair.appendChild(mkBlock(inG, d.inMask, 'in'));
+  const arrow=document.createElement('div'); arrow.className='arrow';
+  const sum=actionSummary(d);
+  arrow.innerHTML=`<div class="ar">→</div><div class="summary">${sum.txt}</div>`;
+  pair.appendChild(arrow);
+  pair.appendChild(mkBlock(outG, d.outMask, 'out'));
+  return pair;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   7) 渲染各区块:train / test / arc-gen(分页)
+   ══════════════════════════════════════════════════════════════════════ */
+function renderAll(){
+  content.innerHTML='';
+  const t=state.task;
+  if(!t){ content.innerHTML='<div class="empty">未加载任务</div>'; return; }
+
+  content.appendChild(renderSection('train', t.train||[], 'TRAIN', '人从这些样例悟规则 · 看同一动作在多个样例上重复'));
+  content.appendChild(renderSection('test',  t.test ||[], 'TEST',  '测试样例'));
+  content.appendChild(renderArcGen(t['arc-gen']||[]));
+}
+
+function renderSection(kind, samples, lbl, hint){
+  const sec=document.createElement('div'); sec.className='section';
+  const head=document.createElement('div'); head.className='sec-head';
+  head.innerHTML=`<span class="lbl ${kind==='train'?'train':'test'}">${lbl}</span>`+
+                 `<span class="meta-mini">${samples.length} 样例 · ${hint}</span>`;
+  sec.appendChild(head);
+  if(!samples.length){ const e=document.createElement('div'); e.className='empty'; e.textContent='(无)'; sec.appendChild(e); return sec; }
+  const pairs=document.createElement('div'); pairs.className='pairs';
+  samples.forEach((s,i)=> pairs.appendChild(buildPair(s, kind, `#${i}`)));
+  sec.appendChild(pairs);
+  return sec;
+}
+
+function renderArcGen(samples){
+  const sec=document.createElement('div'); sec.className='section'; sec.id='agSection';
+  const size=state.settings.agSize;
+  const pages=Math.max(1, Math.ceil(samples.length/size));
+  state.agPage=clamp(state.agPage,0,pages-1);
+  const start=state.agPage*size, end=Math.min(start+size, samples.length);
+
+  const head=document.createElement('div'); head.className='sec-head';
+  head.innerHTML=`<span class="lbl gen">ARC-GEN</span>`+
+    `<span class="meta-mini">${samples.length} 个生成样例 · 看动作在不同尺寸/颜色/参数下怎么变(判断哪些维度是噪声)</span>`;
+  const pager=document.createElement('div'); pager.className='pager';
+  pager.innerHTML=`<button id="agPrev">◀</button>`+
+    `<span class="pg">${samples.length? (start+1):0}–${end} / ${samples.length}　[第 ${state.agPage+1}/${pages} 页]</span>`+
+    `<button id="agNext">▶</button>　<input type="number" id="agJump" min="1" max="${samples.length}" placeholder="跳样例#">`;
+  head.appendChild(pager);
+  sec.appendChild(head);
+
+  if(!samples.length){ const e=document.createElement('div'); e.className='empty'; e.textContent='(无 arc-gen)'; sec.appendChild(e); return sec; }
+  const pairs=document.createElement('div'); pairs.className='pairs wrap';
+  for(let i=start;i<end;i++) pairs.appendChild(buildPair(samples[i], 'gen', `#${i}`));
+  sec.appendChild(pairs);
+
+  // 分页事件(渲染后绑定)
+  setTimeout(()=>{
+    const re=()=>{ const ns=renderArcGen(samples); sec.replaceWith(ns); };
+    $('#agPrev').onclick=()=>{ if(state.agPage>0){state.agPage--; re();} };
+    $('#agNext').onclick=()=>{ if(state.agPage<pages-1){state.agPage++; re();} };
+    $('#agJump').onkeydown=(e)=>{ if(e.key==='Enter'){ const v=parseInt(e.target.value,10);
+      if(v>=1&&v<=samples.length){ state.agPage=Math.floor((v-1)/size); re();
+        setTimeout(()=>{ const card=document.querySelectorAll('#agSection .pair')[(v-1)%size];
+          card&&card.scrollIntoView({block:'center',behavior:'smooth'}); },30); } } };
+  },0);
+  return sec;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   8) 主表信息条 + 侧栏任务列表
+   ══════════════════════════════════════════════════════════════════════ */
+function renderMeta(){
+  const n=state.taskNum;
+  const row = state.tsv && state.tsv.byNum[n];
+  if(!row){ metaStrip.innerHTML='<span class="empty">主表未加载('+(state.tsv?'此题无记录':'未找到 tsv')+')</span>'; return; }
+  const src=row.source||'NA';
+  const badCls=['DEEP','PUBLIC','BASE'].includes(src)?src:'NA';
+  metaStrip.innerHTML =
+    `<span class="badge ${badCls}">${src||'—'}</span>`+
+    `<span class="chip"><span class="k">cost</span><span class="v">${row.cost||'—'}</span></span>`+
+    `<span class="chip"><span class="k">score</span><span class="v">${row.score||'—'}</span></span>`+
+    (row.lb?`<span class="chip"><span class="k">LB</span><span class="v">${row.lb}</span></span>`:'');
+}
+
+function listData(){
+  // 有主表用主表行;否则用 1..400 占位(仍可翻题)
+  let rows = state.tsv ? state.tsv.rows.slice() : Array.from({length:400},(_,i)=>({num:i+1,task:`task${pad3(i+1)}`,cost:'',score:'',source:''}));
+  // 来源筛选
+  rows = rows.filter(r=>{ const s=r.source; if(!['DEEP','PUBLIC','BASE'].includes(s)) return true; return state.srcFilter[s]; });
+  // 搜索
+  if(state.search){ const q=state.search.toLowerCase(); rows=rows.filter(r=> String(r.num).includes(q) || (r.task||'').toLowerCase().includes(q)); }
+  // 排序
+  const {key,dir}=state.sort;
+  rows.sort((a,b)=>{
+    let va,vb;
+    if(key==='num'){ va=a.num; vb=b.num; }
+    else if(key==='source'){ va=a.source||'~'; vb=b.source||'~'; return va<vb? -dir : va>vb? dir : a.num-b.num; }
+    else { va=parseFloat(a[key]); vb=parseFloat(b[key]); if(isNaN(va))va=dir>0?Infinity:-Infinity; if(isNaN(vb))vb=dir>0?Infinity:-Infinity; }
+    return (va-vb)*dir || a.num-b.num;
+  });
+  return rows;
+}
+function renderList(){
+  const rows=listData();
+  $('#listCnt').textContent=rows.length;
+  // 排序高亮
+  document.querySelectorAll('#listHead span').forEach(s=>{
+    s.classList.toggle('sorted', s.dataset.sort===state.sort.key);
+    s.textContent = s.dataset.sort + (s.dataset.sort===state.sort.key ? (state.sort.dir>0?' ▲':' ▼') : '');
+  });
+  const box=$('#taskList'); box.innerHTML='';
+  const frag=document.createDocumentFragment();
+  for(const r of rows){
+    const d=document.createElement('div');
+    d.className='trow'+(r.num===state.taskNum?' cur':'');
+    const src=r.source||'';
+    const badCls=['DEEP','PUBLIC','BASE'].includes(src)?src:'NA';
+    const srcColor = src==='DEEP'?'var(--sky)':src==='PUBLIC'?'var(--violet)':src==='BASE'?'#a7a7b3':'var(--muted-2)';
+    d.innerHTML=`<span class="t">${pad3(r.num)}</span>`+
+                `<span class="c">${r.cost!==''&&r.cost!=null?r.cost:'·'}</span>`+
+                `<span class="s">${r.score!==''&&r.score!=null?r.score:'·'}</span>`+
+                `<span class="src" style="color:${srcColor}">${src||''}</span>`;
+    d.onclick=()=>gotoTask(r.num);
+    frag.appendChild(d);
+  }
+  box.appendChild(frag);
+  const cur=box.querySelector('.trow.cur'); if(cur) cur.scrollIntoView({block:'nearest'});
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   9) 任务切换 + 初始化
+   ══════════════════════════════════════════════════════════════════════ */
+async function gotoTask(n){
+  n=clamp(n|0,1,400);
+  state.taskNum=n; state.agPage=0;
+  taskNumLbl.textContent=pad3(n);
+  $('#taskInput').value=pad3(n);
+  LS.set('lastTask',n);
+  location.hash='task='+n;
+  taskNumLbl.textContent=pad3(n);
+  renderMeta(); renderList();
+  showLoader(`加载 task${pad3(n)} …`);
+  try{
+    state.task=await loadTaskData(n);
+    renderAll();
+  }catch(e){
+    content.innerHTML=`<div class="empty">加载 task${pad3(n)} 失败:${e.message}<br><br>`+
+      `请点右上「📁 选数据」选择 data 文件夹,或用 start.bat 起本地服务。</div>`;
+    openSetup('加载失败:'+e.message);
+  }finally{ hideLoader(); }
+}
+
+/* file 模式:接收文件夹/单文件 */
+function ingestFiles(fileList){
+  let cnt=0;
+  for(const f of fileList){
+    const name=f.name;
+    if(/^task\d{3}\.json$/i.test(name)){ state.jsonFiles.set(name.toLowerCase().replace(/task0*?(\d+)/,(m,d)=>'task'+pad3(parseInt(d,10))), f); cnt++; }
+    else if(/task\d+\.json$/i.test(name)){ const num=taskNumOf(name); if(num) { state.jsonFiles.set(`task${pad3(num)}.json`, f); cnt++; } }
+  }
+  if(cnt>0){ state.fileMode=true; $('#modeTag').textContent='file 模式 · 内存 '+cnt+' 题'; }
+  return cnt;
+}
+
+function openSetup(reason){
+  $('#setup').style.display='flex';
+  if(reason) $('#setupReason').textContent=reason;
+}
+function closeSetup(){ $('#setup').style.display='none'; }
+
+/* ── 事件绑定 ── */
+function bindEvents(){
+  $('#prevBtn').onclick=()=>gotoTask(state.taskNum-1);
+  $('#nextBtn').onclick=()=>gotoTask(state.taskNum+1);
+  $('#goBtn').onclick=()=>{ const v=parseInt($('#taskInput').value,10); if(v) gotoTask(v); };
+  $('#taskInput').onkeydown=e=>{ if(e.key==='Enter'){ const v=parseInt(e.target.value,10); if(v) gotoTask(v);} };
+  $('#reloadBtn').onclick=()=>{ tryLoadTSV().then(()=>{renderMeta();renderList();}); gotoTask(state.taskNum); };
+  $('#loadFilesBtn').onclick=()=>openSetup();
+
+  // diff 段
+  const diffSeg=$('#diffSeg');
+  const syncDiffSeg=()=>diffSeg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.v===state.settings.diff));
+  diffSeg.querySelectorAll('button').forEach(b=> b.onclick=()=>{ state.settings.diff=b.dataset.v; LS.set('diff',b.dataset.v); syncDiffSeg(); renderAll(); });
+  syncDiffSeg();
+
+  // 网格线
+  const gl=$('#gridLinesChk'); gl.checked=state.settings.gridLines;
+  gl.onchange=()=>{ state.settings.gridLines=gl.checked; LS.set('gridLines',gl.checked); renderAll(); };
+
+  // 缩放
+  const zoom=$('#zoom'), zv=$('#zoomVal'); zoom.value=state.settings.zoom; zv.textContent=state.settings.zoom.toFixed(1)+'×';
+  zoom.oninput=()=>{ state.settings.zoom=parseFloat(zoom.value); zv.textContent=state.settings.zoom.toFixed(1)+'×'; LS.set('zoom',state.settings.zoom); renderAll(); };
+
+  // arc-gen 每页
+  const ag=$('#agSize'); ag.value=state.settings.agSize;
+  ag.onchange=()=>{ state.settings.agSize=clamp(parseInt(ag.value,10)||12,2,60); LS.set('agSize',state.settings.agSize); state.agPage=0; renderAll(); };
+
+  // 侧栏
+  $('#sideToggle').onclick=()=>$('#side').classList.toggle('collapsed');
+  $('#searchInput').oninput=e=>{ state.search=e.target.value.trim(); renderList(); };
+  document.querySelectorAll('#listHead span').forEach(s=> s.onclick=()=>{
+    const k=s.dataset.sort;
+    if(state.sort.key===k) state.sort.dir*=-1; else state.sort={key:k,dir:1};
+    LS.set('sort',state.sort); renderList();
+  });
+  document.querySelectorAll('#srcFilters .src-chip').forEach(c=> c.onclick=()=>{
+    const s=c.dataset.src; state.srcFilter[s]=!state.srcFilter[s]; c.classList.toggle('on',state.srcFilter[s]);
+    LS.set('srcFilter',state.srcFilter); renderList();
+  });
+  // 同步来源筛选 chip 初态
+  document.querySelectorAll('#srcFilters .src-chip').forEach(c=> c.classList.toggle('on', !!state.srcFilter[c.dataset.src]));
+
+  // setup 面板
+  $('#dirPicker').onchange=e=>{ const n=ingestFiles(e.target.files); $('#dirStat').textContent= n?`已读 ${n} 个 json`:'未找到 taskNNN.json'; };
+  $('#tsvPicker').onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
+    try{ state.tsv=parseTSV(await readFileText(f)); $('#tsvStat').textContent=`已读 ${state.tsv.rows.length} 行`; renderMeta(); renderList(); }
+    catch(err){ $('#tsvStat').textContent='解析失败:'+err.message; } };
+  $('#setupGo').onclick=()=>{ closeSetup(); if(state.fileMode||state.jsonFiles.size){ gotoTask(state.taskNum); } };
+  $('#setupClose').onclick=closeSetup;
+
+  // 快捷键
+  window.addEventListener('keydown', e=>{
+    if(/input|textarea|select/i.test(e.target.tagName)) return;
+    if(e.key==='ArrowLeft'){ gotoTask(state.taskNum-1); }
+    else if(e.key==='ArrowRight'){ gotoTask(state.taskNum+1); }
+    else if(e.key.toLowerCase()==='d'){ const order=['spotlight','ring','off']; const i=order.indexOf(state.settings.diff);
+      state.settings.diff=order[(i+1)%3]; LS.set('diff',state.settings.diff); syncDiffSeg(); renderAll(); toast('Diff: '+state.settings.diff); }
+    else if(e.key.toLowerCase()==='g'){ gl.checked=!gl.checked; gl.onchange(); toast('网格线 '+(gl.checked?'开':'关')); }
+    else if(e.key.toLowerCase()==='t'){ $('#side').classList.toggle('collapsed'); }
+    else if(e.key==='['){ zoom.value=clamp(state.settings.zoom-0.1,0.5,2.4); zoom.oninput(); }
+    else if(e.key===']'){ zoom.value=clamp(state.settings.zoom+0.1,0.5,2.4); zoom.oninput(); }
+  });
+}
+
+/* ── 启动 ── */
+async function init(){
+  bindEvents();
+  // hash 优先(支持 #task=NN 直达/书签)
+  const m=location.hash.match(/task=(\d+)/); if(m) state.taskNum=clamp(parseInt(m[1],10),1,400);
+  $('#modeTag').textContent = state.http ? ('http 模式 · '+location.host) : 'file:// 模式';
+
+  if(state.http){
+    await tryLoadTSV();
+    renderMeta(); renderList();
+    // 试探能否读任务;不行则弹 setup
+    try{ state.task=await loadTaskData(state.taskNum); taskNumLbl.textContent=pad3(state.taskNum);
+      $('#taskInput').value=pad3(state.taskNum); renderAll(); }
+    catch(e){ renderList(); openSetup('无法自动读取 '+state.dataDir+' 下的任务('+e.message+')。可改用手动选择,或确认服务根目录是 Golf2026。'); }
+  }else{
+    // file:// 直接打开 → 引导手动选择
+    renderList();
+    openSetup();
+  }
+}
+window.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>
